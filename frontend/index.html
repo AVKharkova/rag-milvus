@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Milvus</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+<div class="app-container">
+    <aside class="sidebar glass">
+        <div class="logo">
+            <span class="logo-icon">⚡</span>
+            <h2>RAG Milvus</h2>
+        </div>
+        <div class="control-group">
+            <div class="switch-container">
+                <span>Reranker</span>
+                <label class="switch">
+                    <input type="checkbox" id="use-reranker">
+                    <span class="slider round"></span>
+                </label>
+            </div>
+        </div>
+        <div class="control-group">
+            <div class="range-header">
+                <span>Лимит</span>
+                <span class="range-val" id="limit-val">5</span>
+            </div>
+            <input type="range" id="limit" min="1" max="20" value="5" class="range-input">
+        </div>
+        <div class="control-group">
+            <h3>Tenant</h3>
+            <select id="org-preset">
+                <option value="*">Везде</option>
+                <option value="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">Demo</option>
+                <option value="custom">Свой…</option>
+            </select>
+            <div class="input-field" style="margin-top:8px">
+                <input type="text" id="org-id" value="*">
+            </div>
+            <div class="input-field">
+                <label for="acl">ACL</label>
+                <input type="text" id="acl" value="public">
+            </div>
+        </div>
+        <div class="sidebar-footer">
+            <button id="btn-admin-panel" class="btn secondary">Загрузить документ</button>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        <header class="header">
+            <h1>Milvus RAG</h1>
+            <div id="service-health" class="health-badge loading">…</div>
+        </header>
+        <section class="search-section">
+            <div class="search-bar-container glass">
+                <input type="text" id="search-input" placeholder="Поисковый запрос…" autocomplete="off">
+                <button id="search-button" class="btn primary">Найти</button>
+            </div>
+        </section>
+        <section id="metrics-section" class="metrics-container" style="display:none">
+            <div class="metric-card glass"><span class="metric-label">Embed</span><div class="metric-value" id="metric-embed">—</div></div>
+            <div class="metric-card glass"><span class="metric-label">Retrieve</span><div class="metric-value" id="metric-retrieve">—</div></div>
+            <div class="metric-card glass"><span class="metric-label">Rerank</span><div class="metric-value" id="metric-rerank">—</div></div>
+            <div class="metric-card glass highlight"><span class="metric-label">Total</span><div class="metric-value" id="metric-total">—</div></div>
+        </section>
+        <div id="warnings-container" class="warnings-box" style="display:none"></div>
+        <section id="llm-section" class="results-section" style="display:none;margin-bottom:24px">
+            <div class="results-header"><h2>Ответ AI</h2></div>
+            <div class="llm-answer-box glass"><div id="llm-answer-content" class="llm-content"></div></div>
+        </section>
+        <section class="results-section">
+            <div class="results-header">
+                <h2>Milvus</h2>
+                <span id="results-count" class="results-count">0</span>
+            </div>
+            <div id="results-list" class="results-list">
+                <div class="empty-state"><p>Ожидание запроса…</p></div>
+            </div>
+        </section>
+    </main>
+</div>
+
+<div id="admin-modal" class="modal-overlay" style="display:none">
+    <div class="modal glass">
+        <div class="modal-header">
+            <h2>Ingest</h2>
+            <button id="btn-close-modal" class="close-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="input-field">
+                <label>Admin key</label>
+                <input type="password" id="admin-api-key" value="dev-admin-key">
+            </div>
+            <div class="input-field">
+                <label>Title</label>
+                <input type="text" id="ingest-title">
+            </div>
+            <div class="input-field">
+                <label>Text</label>
+                <textarea id="ingest-text" rows="6"></textarea>
+            </div>
+            <div class="input-field">
+                <label>Org ID</label>
+                <input type="text" id="ingest-org-id" value="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+            </div>
+            <button id="btn-submit-ingest" class="btn primary full-width">Индексировать</button>
+        </div>
+    </div>
+</div>
+<script src="/js/app.js"></script>
+</body>
+</html>
