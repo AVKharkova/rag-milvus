@@ -15,6 +15,14 @@ from langchain_openai import ChatOpenAI
 from src.config import settings
 from src.search import search_pipeline
 
+try:
+    from langfuse.decorators import observe
+except ImportError:
+    def observe(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,6 +83,52 @@ DEFAULT_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
+def _prompt_has_context(prompt: ChatPromptTemplate) -> bool:
+    try:
+        return "context" in set(prompt.input_variables)
+    except Exception:
+        return False
+
+
+def get_rag_prompt() -> tuple[ChatPromptTemplate, Any]:
+    """Fetch prompt from Langfuse or fallback to default."""
+    try:
+        from langfuse import Langfuse
+
+        langfuse_client = Langfuse(
+            public_key=settings.langfuse_public_key,
+            secret_key=settings.langfuse_secret_key,
+            host=settings.langfuse_host,
+        )
+        lf_prompt = langfuse_client.get_prompt("rag-system-prompt")
+        compiled: Any = lf_prompt.get_langchain_prompt()
+
+        if isinstance(compiled, str):
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", compiled),
+                    ("human", "{question}"),
+                ]
+            )
+        elif isinstance(compiled, list):
+            prompt = ChatPromptTemplate.from_messages(compiled)
+        else:
+            logger.warning(
+                "Unexpected Langfuse prompt type %s — using default", type(compiled)
+            )
+            return DEFAULT_PROMPT, None
+
+        if not _prompt_has_context(prompt):
+            logger.warning("Langfuse prompt 'rag-system-prompt' has no {context}")
+            return DEFAULT_PROMPT, None
+        return prompt, lf_prompt
+    except Exception as exc:
+        logger.warning("Failed to fetch prompt from Langfuse: %s", exc)
+        return DEFAULT_PROMPT, None
+
+
+
+@observe(name="generate_answer_stream", as_type="generation")
 async def generate_answer_stream(
     query: str,
     org_id: Optional[str] = None,
@@ -112,7 +166,19 @@ async def generate_answer_stream(
         llm_kwargs["base_url"] = settings.openai_compatible_base_url
 
     llm = ChatOpenAI(**llm_kwargs)
-    yield "__TRACE_ID__:\n\n"
+
+    trace_id = "unknown"
+    langfuse_handler = None
+    try:
+        from langfuse.decorators import langfuse_context
+        trace_id = langfuse_context.get_current_trace_id() or "unknown"
+        langfuse_handler = langfuse_context.get_current_langchain_handler()
+        if session_id or user_id:
+            langfuse_context.update_current_trace(session_id=session_id, user_id=user_id)
+    except Exception:
+        pass
+        
+    yield f"__TRACE_ID__:{trace_id}\n\n"
 
     try:
         docs = await retriever._aget_relevant_documents(query, run_manager=None)  # type: ignore[arg-type]
@@ -126,12 +192,84 @@ async def generate_answer_stream(
         yield "К сожалению, в базе данных нет информации об этом"
         return
 
-    chain = DEFAULT_PROMPT | llm | StrOutputParser()
+    prompt_template, lf_prompt = get_rag_prompt()
+    if lf_prompt:
+        try:
+            from langfuse.decorators import langfuse_context
+            langfuse_context.update_current_observation(prompt=lf_prompt)
+        except Exception:
+            pass
+
+    chain = prompt_template | llm | StrOutputParser()
+    config = {"callbacks": [langfuse_handler]} if langfuse_handler else {}
     try:
         async for chunk in chain.astream(
-            {"context": context_text, "question": query}
+            {"context": context_text, "question": query},
+            config=config
         ):
             yield chunk
     except Exception as exc:
         logger.exception("LLM failed")
         yield f"Ошибка LLM: {exc}"
+    finally:
+        try:
+            from langfuse.decorators import langfuse_context
+            langfuse_context.flush()
+        except Exception:
+            pass
+
+
+@observe(name="generate_chat_stream", as_type="generation")
+async def generate_chat_stream(
+    query: str,
+    session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> AsyncIterator[str]:
+    """Simple chat endpoint without RAG."""
+    api_key = settings.openai_api_key
+    if not api_key or api_key == "sk-placeholder":
+        yield "Ошибка: задайте OPENAI_API_KEY в .env."
+        return
+
+    llm_kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "model": settings.openai_model or "gpt-4o-mini",
+        "temperature": 0.7,
+    }
+    if settings.openai_compatible_base_url:
+        llm_kwargs["base_url"] = settings.openai_compatible_base_url
+
+    llm = ChatOpenAI(**llm_kwargs)
+    
+    trace_id = "unknown"
+    langfuse_handler = None
+    try:
+        from langfuse.decorators import langfuse_context
+        trace_id = langfuse_context.get_current_trace_id() or "unknown"
+        langfuse_handler = langfuse_context.get_current_langchain_handler()
+        if session_id or user_id:
+            langfuse_context.update_current_trace(session_id=session_id, user_id=user_id)
+    except Exception:
+        pass
+        
+    yield f"__TRACE_ID__:{trace_id}\n\n"
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "Вы — AI-ассистент корпоративной базы знаний. Ответьте на общий вопрос пользователя или поприветствуйте его."),
+        ("human", "{question}")
+    ])
+    
+    chain = prompt | llm | StrOutputParser()
+    config = {"callbacks": [langfuse_handler]} if langfuse_handler else {}
+    try:
+        async for chunk in chain.astream({"question": query}, config=config):
+            yield chunk
+    except Exception as exc:
+        logger.exception("LLM failed")
+        yield f"Ошибка LLM: {exc}"
+    finally:
+        try:
+            from langfuse.decorators import langfuse_context
+            langfuse_context.flush()
+        except Exception:
+            pass

@@ -1,86 +1,155 @@
-# RAG Milvus
+# RAG Milvus (Yandex Embeddings Edition)
 
-Облегчённый RAG-сервис **только на Milvus** (без OpenSearch / Postgres / dual-engine A/B).
-Форк логики из `rag-platform`: hybrid dense+BM25 → RRF → опциональный rerank → `/v1/ask`.
+Продвинутый, но при этом легковесный RAG-сервис (Retrieval-Augmented Generation), использующий **Milvus** как единственный гибридный векторный движок и **Yandex Cloud Foundation Models** для генерации эмбеддингов.
 
-## Что в стеке (облегчённые образы)
+## Особенности архитектуры
 
-| Сервис | Образ | Зачем | ≈ RAM lim |
-|--------|--------|--------|-----------|
-| **etcd** | `quay.io/coreos/etcd:v3.5.18` | метаданные Milvus | 256 MB |
-| **minio** | `minio/minio:RELEASE.2024-12-18…` | object store Milvus | 512 MB |
-| **milvus** | `milvusdb/milvus:v2.5.4` standalone | hybrid vector DB | 2 GB |
-| **embedder** | `ghcr.io/huggingface/text-embeddings-inference:cpu-1.6` | `intfloat/multilingual-e5-small` (384-d, RU/EN) | 1 GB |
-| **api** | `python:3.11-slim` build | FastAPI RAG | 512 MB |
+Система реализует современный RAG пайплайн с фокусом на качество поиска на русском языке и экономию ресурсов:
 
-Не включены: OpenSearch, Dashboards, Postgres/pgvector, Langfuse, Attu, Infinity+BGE-M3.
+1. **Adaptive RAG Classifier**: Предварительная классификация запросов. Быстрый и дешевый запрос в LLM определяет, относится ли вопрос к базе знаний. Если это простое приветствие или болтовня (например, "Привет!"), то тяжелый этап поиска (векторизация, гибридный поиск, реранжирование) полностью пропускается, снижая нагрузку на систему и экономя токены.
+2. **Parser & Chunking**: Стратегия **Small2Big (Sentence Window)**. Документы бьются на отдельные предложения (для точного векторного поиска), при этом извлекается широкий контекст (окно до 512 токенов) для передачи в LLM.
 
-> Официальный Milvus standalone нельзя свести к одному контейнеру — нужны etcd + MinIO. Это минимальный поддерживаемый стек.
+   #### Как это работает под капотом:
+   - **Индексация (Small)**: Текст разбивается на отдельные предложения и индексируется в поле `content` в Milvus. На нем строятся плотные и разреженные векторы. Это повышает точность поиска, так как векторы коротких предложений точнее отражают суть вопроса.
+   - **Контекст (Big)**: Для каждого предложения формируется окружающее его окно контекста (соседние предложения общим размером до 512 токенов), которое сохраняется в динамическом поле `parent_content`.
+   - **Выдача**: При поиске сопоставление идет по полю `content` (предложение), но в LLM уходит содержимое `parent_content` (большое окно). Это дает модели полный контекст для генерации качественного ответа.
 
-Опционально тяжёлый embedder:
+3. **Embeddings**: Использование **Yandex Cloud API** (`text-search-doc` для индексации и `text-search-query` для запросов). Локальные тяжелые энкодеры выключены для экономии RAM на сервере (размерность векторов: 256).
+4. **Retrieval**: Гибридный поиск в Milvus. Одновременно выполняется Dense Search (косинусное расстояние векторов) и Sparse Search (встроенный русский BM25).
+5. **Ranking**: Слияние результатов через RRF (Reciprocal Rank Fusion) и финальное переранжирование с помощью кросс-энкодера `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` на базе Infinity.
+6. **Generation**: Стриминговая генерация ответов через LLM с OpenAI-совместимым API с интеграцией промптов из Langfuse.
 
+---
+
+## Стек и Docker-контейнеры
+
+| Сервис | Порт(ы) | Описание | ≈ RAM |
+|--------|---------|----------|-------|
+| **api** | `8010` | FastAPI бэкенд и Frontend интерфейс | 512 MB |
+| **attu** | `8081` | Удобный веб-интерфейс для просмотра коллекций Milvus | 256 MB |
+| **reranker** | `8082` | Infinity: Кросс-энкодер (`mmarco-mMiniLMv2`) для точного переранжирования | 2 GB |
+| **milvus-standalone**| `19530` | Гибридная векторная база данных | 2 GB |
+| **minio** | `9000` | Object Storage (необходим для работы Milvus) | 512 MB |
+| **etcd** | `2379` | Метаданные (необходим для работы Milvus) | 256 MB |
+| **langfuse-server** | `3000` | Сервер телеметрии Langfuse | 512 MB |
+| **langfuse-db** | (внутр.)| PostgreSQL база данных для Langfuse | 256 MB |
+
+---
+
+## 🚀 Как запустить
+
+### 1. Подготовка конфигурации
+
+Скопируйте пример конфига:
 ```bash
-docker compose --profile heavy up -d
-```
-
-## Быстрый старт
-
-```bash
-cd F:\Asias\rag-milvus
 copy .env.example .env
-# задайте OPENAI_API_KEY для /v1/ask
+```
 
+Обязательно заполните следующие ключи в `.env`:
+- `YANDEX_API_KEY`: API ключ от Yandex Cloud (для эмбеддингов)
+- `YANDEX_FOLDER_ID`: Folder ID в Yandex Cloud (каталог)
+- `OPENAI_API_KEY`: Ваш ключ от LLM (OpenAI или совместимого шлюза, например VLLM / Proxy)
+
+### 2. Запуск стека
+
+```bash
 docker compose up -d --build
-# API:             http://localhost:8010
-# Milvus gRPC:     19530
-# TEI embeddings:  8080
 ```
 
-```bash
-curl http://localhost:8010/health
-```
+### 3. Веб-интерфейсы
 
-Ingest + search:
+- **Пользовательский UI (Загрузка файлов, Поиск, Чат)**: [http://localhost:8010](http://localhost:8010)
+- **Attu (Админка базы Milvus)**: [http://localhost:8081](http://localhost:8081)
+  *(Для входа в Attu используйте адрес сервера Milvus: `http://milvus:19530`)*
+- **Langfuse (Телеметрия)**: [http://localhost:3000](http://localhost:3000)
 
-```bash
-curl -X POST http://localhost:8010/v1/admin/ingest/text \
-  -H "X-Admin-Key: dev-admin-key" \
-  -H "Content-Type: application/json" \
-  -d "{\"title\":\"Тест\",\"text\":\"Свято-Успенский монастырь в Красноярске...\",\"org_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"acl\":[\"public\"],\"sync\":true}"
+---
 
-curl -X POST http://localhost:8010/v1/search \
-  -H "Content-Type: application/json" \
-  -d "{\"query\":\"Что такое Свято-Успенский монастырь?\",\"org_id\":\"*\",\"limit\":5}"
-```
+## 🔌 API Эндпоинты
 
-`org_id: "*"` — поиск по всем tenants.
-
-## API
+Документация Swagger доступна по адресу `http://localhost:8010/docs`.
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| GET | `/health` | статус + milvus |
-| POST | `/v1/search` | hybrid retrieval |
-| POST | `/v1/ask` | streaming RAG ответ |
-| POST | `/v1/admin/ingest/text` | sync/async текст → Milvus |
-| POST | `/v1/admin/ingest/file` | sync/async файл → Milvus |
-| GET | `/v1/admin/ingest/tasks/{id}` | статус фона |
+| GET | `/health` | Статус API и подключения к Milvus |
+| POST | `/v1/admin/ingest/file` | Загрузка файлов (`.pdf`, `.docx`, `.txt`) через веб-интерфейс |
+| POST | `/v1/admin/ingest/text` | Прямая индексация JSON-текста |
+| POST | `/v1/classify` | Классификация запроса: нужен ли RAG (`needs_rag: true/false`) |
+| POST | `/v1/search` | Гибридный поиск (возвращает самые релевантные куски текста) |
+| POST | `/v1/search/smart` | Умный поиск с классификацией (пропускает поиск для общих запросов) |
+| POST | `/v1/ask` | RAG-чат (стриминг ответа на основе найденного контекста) |
+| POST | `/v1/chat` | Обычный чат без использования RAG-контекста (для приветствий) |
 
-## Локально без Docker API
+**Важно:** Для админских запросов (`/v1/admin/...`) необходимо передавать заголовок `X-Admin-Key` (по умолчанию: `dev-admin-key`).
 
-Нужны уже запущенные Milvus + TEI:
+---
+
+## 💾 Структура данных в БД Milvus
+
+Данные в коллекции `rag_chunks` организованы следующим образом:
+
+| Поле | Тип данных | Описание | Особенности |
+| :--- | :--- | :--- | :--- |
+| **`pk`** | `VARCHAR (128)` | Первичный ключ | Уникальный ID чанка. |
+| **`org_id`** | `VARCHAR (64)` | ID организации (Tenant ID) | `is_partition_key=True` (для авто-изоляции тенантов). |
+| **`document_id`** | `VARCHAR (64)` | ID исходного документа | Группировка чанков по файлу. |
+| **`chunk_index`** | `INT64` | Номер чанка | Порядковый номер фрагмента в документе. |
+| **`content`** | `VARCHAR (65535)` | Текст фрагмента | Включен русский стеммер и анализатор текста. |
+| **`dense`** | `FLOAT_VECTOR` | Плотный семантический вектор | Размерность: `256` (модель `yandex/text-search`). |
+| **`sparse`** | `SPARSE_FLOAT_VECTOR`| Разреженный вектор BM25 | Рассчитывается внутри Milvus для поиска по точным словам. |
+
+Динамические поля (динамически сохраняемые метаданные):
+- **`document_title`** (`VARCHAR`): Заголовок файла.
+- **`parent_content`** (`VARCHAR`): Широкий контекст (Sentence Window) для передачи в LLM.
+- **`acl_json`** (`VARCHAR`): JSON-список прав доступа (например, `["public"]`).
+
+---
+
+## 📊 Просмотр содержимого БД (Milvus)
+
+В стеке запущен графический интерфейс **Attu** для просмотра векторной базы данных.
+1. Откройте в браузере: [http://localhost:8081](http://localhost:8081)
+2. В поле **Milvus Address** введите внутренний адрес базы в сети Docker: `milvus:19530`
+3. Нажмите **Connect**.
+
+> [!WARNING]
+> При использовании поиска по метаданным (вкладка **Data** -> кнопка **Query**) в поле **Output Fields** обязательно выберите только текстовые поля (например, `pk`, `content`, `document_title`, `chunk_index`, `org_id`). Попытка запросить сырые векторные поля `dense` и `sparse` вызовет ошибку `not allowed to retrieve raw data of field sparse`.
+
+---
+
+## 📈 Телеметрия (Langfuse)
+
+В проект встроен **локальный сервер Langfuse** для сбора трейсов и метрик (Embedding, Retrieval, Generation) и динамического управления системными промптами.
+
+Чтобы включить и настроить телеметрию:
+1. Запустите стек: `docker compose up -d`
+2. Откройте локальный интерфейс: [http://localhost:3000](http://localhost:3000)
+3. Зарегистрируйте аккаунт и создайте новый проект.
+4. Перейдите в настройки проекта -> API Keys и сгенерируйте ключи.
+5. Добавьте полученные ключи в файл `.env`:
+
+```env
+LANGFUSE_PUBLIC_KEY="pk-lf-..."
+LANGFUSE_SECRET_KEY="sk-lf-..."
+LANGFUSE_HOST="http://langfuse-server:3000" # Для docker-сети
+```
+6. Перезапустите API-контейнер: `docker compose up -d --build api`
+
+### Управление промптами
+Вы можете управлять системным промптом через вкладку **Prompts** в интерфейсе Langfuse:
+- Создайте промпт с названием `rag-system-prompt`.
+- Промпт должен принимать переменную `{context}` для инъекции найденного текста и `{question}` для вопроса.
+- Система автоматически стянет последнюю активную версию промпта при генерации ответа.
+
+---
+
+## 🧹 Очистка базы данных
+
+Если вы поменяли размерность эмбеддингов или настройки индексации, вам может понадобиться очистить Milvus. Для этого выполните:
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env
-uvicorn src.main:app --reload --port 8010
+docker compose down -v
+Remove-Item -Recurse -Force volumes/milvus
+docker compose up -d --build
 ```
-
-## Отличия от rag-platform
-
-- Один движок: Milvus hybrid (dense COSINE + BM25 russian + RRF)
-- Нет dual-write / ETL / pgvector / OpenSearch
-- Лёгкие эмбеддинги e5-small (384) вместо BGE-M3 (1024)
-- Reranker выключен по умолчанию (`RERANKER_URL=`)
+*(База автоматически создаст нужные коллекции при первом запросе на Ingest или Поиск)*

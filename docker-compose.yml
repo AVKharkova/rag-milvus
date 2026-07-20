@@ -65,23 +65,31 @@ services:
     mem_limit: 2g
     restart: unless-stopped
 
-  # --- Light CPU embeddings (multilingual e5-small, 384-d) ---
-  # Much smaller than Infinity+bge-m3. OpenAI-compatible /v1/embeddings.
-  embedder:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
-    container_name: rag-milvus-embedder
-    command:
-      - --model-id
-      - intfloat/multilingual-e5-small
-      - --port
-      - "80"
-    volumes:
-      - ./volumes/tei-models:/data
+  # --- Attu UI (Milvus Web GUI) ---
+  attu:
+    image: zilliz/attu:v2.4.3
+    container_name: rag-milvus-attu
+    environment:
+      MILVUS_URL: milvus:19530
     ports:
-      - "8080:80"
+      - "8081:3000"
+    depends_on:
+      milvus:
+        condition: service_healthy
+    restart: unless-stopped
+
+
+  reranker:
+    image: michaelf34/infinity:latest
+    container_name: rag-milvus-reranker
+    command: v2 --model-id cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 --port 7997
+    volumes:
+      - ./volumes/infinity-models:/app/.cache
+    ports:
+      - "8082:7997"
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-    mem_limit: 1g
+    mem_limit: 2g
     restart: unless-stopped
 
   api:
@@ -93,20 +101,23 @@ services:
       - .env
     environment:
       MILVUS_URI: http://milvus:19530
-      EMBEDDER_URL: http://embedder:80
-      EMBEDDING_MODEL: intfloat/multilingual-e5-small
-      EMBEDDING_DIMENSION: "384"
-      RERANKER_URL: ""
+      EMBEDDING_MODEL: yandex/text-search
+      EMBEDDING_DIMENSION: "256"
+      YANDEX_API_KEY: ${YANDEX_API_KEY}
+      YANDEX_FOLDER_ID: ${YANDEX_FOLDER_ID}
+      RERANKER_URL: http://reranker:7997
+      RERANKING_MODEL: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
       CONTEXTUAL_RETRIEVAL_ENABLED: "false"
       CONTEXTUAL_RETRIEVAL_MOCK: "true"
       REQUIRE_ORG_CONTEXT: "false"
       ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key}
       ADMIN_AUTH_REQUIRED: "true"
+      LANGFUSE_HOST: http://langfuse-server:3000
       CORS_ORIGINS: "*"
     depends_on:
       milvus:
         condition: service_healthy
-      embedder:
+      reranker:
         condition: service_started
     mem_limit: 512m
     restart: unless-stopped
@@ -121,3 +132,39 @@ services:
     ports:
       - "7997:7997"
     mem_limit: 4g
+
+
+  # --- Langfuse (Local Telemetry) ---
+  langfuse-server:
+    image: langfuse/langfuse:2
+    container_name: rag-milvus-langfuse
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@langfuse-db:5432/postgres
+      - NEXTAUTH_SECRET=mysecret
+      - SALT=mysalt
+      - NEXTAUTH_URL=http://localhost:3000
+      - ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
+      - TELEMETRY_ENABLED=false
+      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=false
+    restart: unless-stopped
+
+  langfuse-db:
+    image: postgres:15
+    container_name: rag-milvus-langfuse-db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    volumes:
+      - ./volumes/langfuse-db:/var/lib/postgresql/data

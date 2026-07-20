@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     embedding_dimension: int = 384
     embedding_model_version: str = "e5-small-v1"
 
+    # Yandex Cloud Embeddings
+    yandex_api_key: Optional[str] = None
+    yandex_folder_id: Optional[str] = None
+
     # Optional reranker (leave empty to disable)
     reranker_url: str = ""
     reranking_model: str = "BAAI/bge-reranker-base"
@@ -59,6 +63,10 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         parts = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
         return parts or ["*"]
+
+    @property
+    def is_yandex_embeddings(self) -> bool:
+        return bool(self.yandex_api_key and self.yandex_folder_id)
 
     @property
     def openai_compatible_base_url(self) -> Optional[str]:

@@ -39,13 +39,13 @@ document.addEventListener('DOMContentLoaded', () => {
             .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    async function askAI(body) {
+    async function askAI(body, endpoint = '/v1/ask') {
         const section = document.getElementById('llm-section');
         const content = document.getElementById('llm-answer-content');
         section.style.display = 'block';
         content.textContent = 'Генерация…';
         try {
-            const res = await fetch(`${API_URL}/v1/ask`, {
+            const res = await fetch(`${API_URL}${endpoint}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -87,11 +87,20 @@ document.addEventListener('DOMContentLoaded', () => {
             rrf_k: 60,
         };
         try {
-            const data = await (await fetch(`${API_URL}/v1/search`, {
+            const data = await (await fetch(`${API_URL}/v1/search/smart`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             })).json();
+
+            if (data.needs_rag === false) {
+                metricsSection.style.display = 'none';
+                warningsContainer.style.display = 'none';
+                resultsCount.textContent = `0 документов`;
+                resultsList.innerHTML = '<div class="empty-state"><p>Поиск по базе знаний не требуется (общий вопрос).</p></div>';
+                await askAI(body, '/v1/chat');
+                return;
+            }
 
             const m = data.metrics || {};
             metricsSection.style.display = 'grid';
@@ -116,7 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 resultsList.innerHTML = results.map((doc, idx) => {
                     const title = doc.metadata?.document_title || `#${idx + 1}`;
                     const score = doc.relevance_score ?? doc.score;
-                    return `<div class="result-card glass">
+                    return `<div class="result-card glass" style="--card-index: ${idx}">
                         <div class="result-card-header">
                             <span class="result-title">${escapeHtml(title)}</span>
                             <span class="result-score-badge">${score != null ? Number(score).toFixed(4) : '—'}</span>
@@ -125,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>`;
                 }).join('');
             }
-            await askAI(body);
+            await askAI(body, '/v1/ask');
         } catch (e) {
             resultsList.innerHTML = `<div class="empty-state"><p>Ошибка: ${escapeHtml(e.message)}</p></div>`;
         } finally {
@@ -136,6 +145,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     searchButton.addEventListener('click', performSearch);
     searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') performSearch(); });
+
+    // Typical questions handler
+    const questionPills = document.querySelectorAll('.question-pill');
+    questionPills.forEach(pill => {
+        pill.addEventListener('click', () => {
+            searchInput.value = pill.textContent;
+            performSearch();
+        });
+    });
 
     const modal = document.getElementById('admin-modal');
     document.getElementById('btn-admin-panel').onclick = () => { modal.style.display = 'flex'; };
@@ -165,4 +183,18 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.disabled = false;
         }
     };
+
+    // Ambient blobs mouse-follow interactive effect
+    document.addEventListener('mousemove', (e) => {
+        const mouseX = (e.clientX / window.innerWidth - 0.5) * 50; // shift max 25px
+        const mouseY = (e.clientY / window.innerHeight - 0.5) * 50;
+        
+        const blob1 = document.querySelector('.blob-1');
+        const blob2 = document.querySelector('.blob-2');
+        const blob3 = document.querySelector('.blob-3');
+        
+        if (blob1) blob1.style.transform = `translate(${mouseX}px, ${mouseY}px)`;
+        if (blob2) blob2.style.transform = `translate(${-mouseX}px, ${-mouseY}px)`;
+        if (blob3) blob3.style.transform = `translate(${mouseX * 0.5}px, ${-mouseY * 0.5}px)`;
+    });
 });

@@ -11,12 +11,40 @@ import httpx
 from src.config import is_cross_tenant_org, settings
 from src.milvus_store import search_milvus_hybrid
 
+try:
+    from langfuse.decorators import observe
+except ImportError:
+    def observe(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 logger = logging.getLogger(__name__)
 
 
 async def _get_embedding(query: str) -> tuple[list[float], list[str]]:
     warnings: list[str] = []
     text = query
+
+    if settings.is_yandex_embeddings:
+        url = "https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding"
+        headers = {"Authorization": f"Api-Key {settings.yandex_api_key}"}
+        model_uri = f"emb://{settings.yandex_folder_id}/text-search-query/latest"
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.post(
+                    url,
+                    headers=headers,
+                    json={"modelUri": model_uri, "text": text},
+                    timeout=60.0
+                )
+                res.raise_for_status()
+                return res.json()["embedding"], warnings
+            except Exception as exc:
+                logger.warning("Yandex Query Embedding failed: %s", exc)
+                return [], ["Vector search skipped - Yandex embedding unavailable"]
+
+    # TEI/OpenAI fallback
     if "e5" in settings.embedding_model.lower() and not query.startswith("query:"):
         text = f"query: {query}"
     async with httpx.AsyncClient() as client:
@@ -59,32 +87,37 @@ async def _rerank(
     docs = [doc.get("indexed_content") or doc["content"] for _, _, doc in candidates]
     async with httpx.AsyncClient() as client:
         try:
+            req_json = {
+                "model": settings.reranking_model,
+                "query": query,
+                "documents": docs,
+            }
+            logger.warning("Reranker payload: %s", req_json)
             response = await client.post(
                 f"{settings.reranker_url.rstrip('/')}/rerank",
-                json={
-                    "model": settings.reranking_model,
-                    "query": query,
-                    "documents": docs,
-                },
+                json=req_json,
                 timeout=60.0,
             )
             response.raise_for_status()
-            rerank_data = response.json()["results"]
+            rerank_data = response.json()
             results = []
-            for item in rerank_data:
+            for item in rerank_data.get("results") or []:
                 idx = item["index"]
                 _, _, doc = candidates[idx]
                 results.append(
                     {
                         "id": doc["id"],
                         "content": doc["content"],
-                        "relevance_score": item["relevance_score"],
+                        "relevance_score": item.get("relevance_score") if item.get("relevance_score") is not None else item.get("score"),
                         "metadata": doc.get("metadata", {}),
                     }
                 )
             return results, warnings
         except Exception as exc:
-            logger.warning("Reranking failed: %s", exc)
+            err_body = ""
+            if isinstance(exc, httpx.HTTPStatusError):
+                err_body = f", Body: {exc.response.text}"
+            logger.warning("Reranking failed: %s%s", exc, err_body)
             warnings.append("Reranking failed - using search order")
             return [
                 {
@@ -97,6 +130,7 @@ async def _rerank(
             ], warnings
 
 
+@observe(name="search_pipeline")
 async def search_pipeline(
     query: str,
     limit: int = 10,
@@ -122,7 +156,6 @@ async def search_pipeline(
             pass
 
     if is_cross_tenant_org(org_id):
-        warnings.append("Cross-tenant search: org_id filter disabled.")
         org_id = None
     elif settings.require_org_context and not org_id:
         return {

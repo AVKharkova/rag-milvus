@@ -5,9 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RAG Milvus</title>
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/css/styles.css">
+    <link rel="stylesheet" href="/css/styles.css?v=2">
 </head>
 <body>
+<div class="ambient-blobs">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+</div>
 <div class="app-container">
     <aside class="sidebar glass">
         <div class="logo">
@@ -60,6 +65,13 @@
                 <input type="text" id="search-input" placeholder="Поисковый запрос…" autocomplete="off">
                 <button id="search-button" class="btn primary">Найти</button>
             </div>
+            <div class="typical-questions">
+                <span class="question-pill">О чем фильм «Только ты и я»?</span>
+                <span class="question-pill">Где встречаются первые упоминания о строении человеческого тела?</span>
+                <span class="question-pill">Какая теория была отвергнута после смерти Вегенера?</span>
+                <span class="question-pill">АЛЬФА-1033-ОМЕГА</span>
+                <span class="question-pill">Что делала хливкая жаба Неточка?</span>
+            </div>
         </section>
         <section id="metrics-section" class="metrics-container" style="display:none">
             <div class="metric-card glass"><span class="metric-label">Embed</span><div class="metric-value" id="metric-embed">—</div></div>
@@ -95,22 +107,62 @@
                 <label>Admin key</label>
                 <input type="password" id="admin-api-key" value="dev-admin-key">
             </div>
-            <div class="input-field">
-                <label>Title</label>
-                <input type="text" id="ingest-title">
+            
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="tab-ingest">Текст</button>
+                <button class="tab-btn" data-tab="tab-upload">Файл / Папка</button>
             </div>
-            <div class="input-field">
-                <label>Text</label>
-                <textarea id="ingest-text" rows="6"></textarea>
+
+            <!-- Tab Ingest -->
+            <div id="tab-ingest" class="tab-content active">
+                <div class="input-field">
+                    <label>Title</label>
+                    <input type="text" id="ingest-title">
+                </div>
+                <div class="input-field">
+                    <label>Text</label>
+                    <textarea id="ingest-text" rows="6"></textarea>
+                </div>
+                <div class="input-grid">
+                    <div class="input-field">
+                        <label>Org ID</label>
+                        <input type="text" id="ingest-org-id" value="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+                    </div>
+                    <div class="input-field">
+                        <label>ACL</label>
+                        <input type="text" id="ingest-acl" value="public">
+                    </div>
+                </div>
+                <button id="btn-submit-ingest" class="btn primary full-width">Индексировать Текст</button>
             </div>
-            <div class="input-field">
-                <label>Org ID</label>
-                <input type="text" id="ingest-org-id" value="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+
+            <!-- Tab Upload -->
+            <div id="tab-upload" class="tab-content">
+                <div class="input-grid">
+                    <div class="input-field">
+                        <label for="upload-file">Выбрать Файлы</label>
+                        <input type="file" id="upload-file" accept=".txt,.pdf,.md,.docx,.doc" multiple>
+                    </div>
+                    <div class="input-field">
+                        <label for="upload-folder">Выбрать Папку</label>
+                        <input type="file" id="upload-folder" accept=".txt,.pdf,.md,.docx,.doc" webkitdirectory directory>
+                    </div>
+                </div>
+                <div class="input-grid">
+                    <div class="input-field">
+                        <label for="upload-org-id">Org ID</label>
+                        <input type="text" id="upload-org-id" value="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+                    </div>
+                    <div class="input-field">
+                        <label for="upload-acl">ACL</label>
+                        <input type="text" id="upload-acl" value="public">
+                    </div>
+                </div>
+                <button id="btn-submit-upload" class="btn primary full-width">Загрузить и Индексировать</button>
             </div>
-            <button id="btn-submit-ingest" class="btn primary full-width">Индексировать</button>
         </div>
     </div>
 </div>
-<script src="/js/app.js"></script>
+<script src="/js/app.js?v=2"></script>
 </body>
 </html>

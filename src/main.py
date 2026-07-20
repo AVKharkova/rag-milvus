@@ -24,7 +24,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.config import resolve_org_id, settings
-from src.generation import generate_answer_stream
+from src.generation import generate_answer_stream, generate_chat_stream
+from src.classifier import classify_query
 from src.indexing.ingest_tasks import create_task, get_task
 from src.indexing.ingestion import (
     ingest_parsed_document,
@@ -100,6 +101,20 @@ class SearchResponse(BaseModel):
     metrics: Optional[dict] = None
 
 
+class ClassifyRequest(BaseModel):
+    query: str
+
+
+class ClassifyResponse(BaseModel):
+    needs_rag: bool
+
+
+class SmartSearchResponse(BaseModel):
+    needs_rag: bool
+    results: List[SearchResult]
+    warnings: List[str]
+
+
 class IngestTextRequest(BaseModel):
     title: str
     text: str
@@ -152,6 +167,57 @@ async def ask(
             user_id=req.user_id,
         ),
         media_type="text/plain; charset=utf-8",
+    )
+
+
+@app.post("/v1/chat")
+async def chat(
+    req: SearchRequest,
+):
+    enforce_query_guardrails(req.query)
+    return StreamingResponse(
+        generate_chat_stream(
+            query=req.query,
+            session_id=req.session_id,
+            user_id=req.user_id,
+        ),
+        media_type="text/plain; charset=utf-8",
+    )
+
+
+@app.post("/v1/classify", response_model=ClassifyResponse)
+async def classify(req: ClassifyRequest):
+    enforce_query_guardrails(req.query)
+    needs_rag = await classify_query(req.query)
+    return ClassifyResponse(needs_rag=needs_rag)
+
+
+@app.post("/v1/search/smart", response_model=SmartSearchResponse)
+async def smart_search(
+    req: SearchRequest,
+    x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
+):
+    enforce_query_guardrails(req.query)
+    org_id = resolve_org_id(header_org_id=x_org_id, body_org_id=req.org_id)
+    needs_rag = await classify_query(req.query)
+    if not needs_rag:
+        return SmartSearchResponse(needs_rag=False, results=[], warnings=[])
+    
+    search_result = await search_pipeline(
+        query=req.query,
+        limit=req.limit,
+        org_id=org_id,
+        acl=req.acl,
+        search_type=req.search_type or "hybrid",
+        use_reranker=bool(req.use_reranker),
+        rrf_k=req.rrf_k or 60,
+        session_id=req.session_id,
+        user_id=req.user_id,
+    )
+    return SmartSearchResponse(
+        needs_rag=True,
+        results=search_result.get("results", []),
+        warnings=search_result.get("warnings", []),
     )
 
 

@@ -21,12 +21,42 @@ logger = logging.getLogger(__name__)
 
 
 async def _embed_texts(texts: list[str]) -> list[list[float]]:
+    if not texts:
+        return []
+
+    if settings.is_yandex_embeddings:
+        # Yandex Cloud Embeddings (text-search-doc)
+        url = "https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding"
+        headers = {"Authorization": f"Api-Key {settings.yandex_api_key}"}
+        model_uri = f"emb://{settings.yandex_folder_id}/text-search-doc/latest"
+        sem = asyncio.Semaphore(2)
+
+        async def embed_single(client: httpx.AsyncClient, text: str) -> list[float]:
+            async with sem:
+                for attempt in range(4):
+                    try:
+                        res = await client.post(
+                            url,
+                            headers=headers,
+                            json={"modelUri": model_uri, "text": text},
+                            timeout=60.0
+                        )
+                        res.raise_for_status()
+                        return res.json()["embedding"]
+                    except Exception as e:
+                        if attempt == 3:
+                            raise RuntimeError(f"Yandex embedding failed: {e}")
+                        await asyncio.sleep(1 + attempt)
+
+        async with httpx.AsyncClient() as client:
+            return await asyncio.gather(*(embed_single(client, t) for t in texts))
+
+    # Standard TEI/OpenAI embeddings
     model = settings.embedding_model.lower()
     if "e5" in model:
         texts = [t if t.startswith("passage:") else f"passage: {t}" for t in texts]
 
     base = settings.embedder_url.rstrip("/")
-    # TEI OpenAI-compat: /v1/embeddings; Infinity: /embeddings
     urls = [f"{base}/v1/embeddings", f"{base}/embeddings"]
     last_exc: Exception | None = None
     async with httpx.AsyncClient() as client:
